@@ -1,0 +1,81 @@
+module QuestionOne where
+import Daml.Script
+ 
+template Baz
+  with
+    s : Party
+    c : [Party]
+  where
+    signatory s
+    observer c
+  
+    nonconsuming choice Clone
+      : ContractId Foo
+      with
+        ct : Party
+        fooCid : ContractId Foo
+      controller ct
+      do
+        assert (ct `elem` c)
+        foo <- fetch fooCid
+        create foo
+  
+    nonconsuming choice Fetch
+      : Foo
+      with
+        ct : Party
+        cid : (ContractId Foo)
+      controller ct
+      do
+        assert (ct `elem` c)
+        fetch cid
+  
+    nonconsuming choice Exercise
+      : Foo
+      with
+        ct : Party
+        p : Party
+        cid : (ContractId Foo)
+      controller ct
+      do
+        assert (ct `elem` c)
+        exercise cid Bar with p
+        
+  
+testFoo : Script () = do
+  parties@[p1, p2, p3, p4] <- getParties
+  let foo : Foo = getFoo p1 p2 p3 p4
+  
+  fooCid <- submit p1 do
+    createCmd foo
+
+  bazCid <- submit p4 do
+    createCmd Baz with
+      s = p4
+      c = [p1, p2, p3]
+
+  submitMustFail p2 do
+    archiveCmd fooCid
+
+  submit p2 do
+    exerciseCmd bazCid Clone with
+      ct = p2
+      fooCid
+
+  submitMustFail p3 do
+    exerciseCmd bazCid Fetch with
+      ct = p3
+      cid = fooCid
+  
+  submit p2 do
+    exerciseCmd bazCid Exercise with
+      ct = p2
+      p = p3
+      cid = fooCid 
+  
+  submit p3 do
+    exerciseCmd bazCid Fetch with
+      ct = p3
+      cid = fooCid
+  
+  return ()

@@ -1,0 +1,155 @@
+module Main where
+import DA.Date
+import Daml.Script
+
+
+data Country = Afghanistan | Albania | Algeria | Andorra | Angola | Argentina | Armenia | Australia | Austria | Azerbaijan
+  deriving (Eq, Show)
+
+data VisaType = Work | WorkAndTravel | Study | Tourism | Asylum
+  deriving (Eq, Show)
+
+template ConsulateRole
+  with
+    country : Country
+    authority : Party
+    consulate : Party
+  where
+    signatory authority
+    controller consulate can 
+      nonconsuming CreateRequesterRole : ContractId RequesterRole
+        with
+          requester : Party
+          name : Text
+          birthDate : Date
+          address : Text
+          nationality : Country
+          gender : Text
+        do 
+          create RequesterRole with ..
+
+
+template RequesterRole
+  with
+    requester : Party
+    consulate : Party
+    name : Text
+    birthDate : Date
+    address : Text
+    nationality : Country
+    gender : Text
+  where
+    signatory consulate
+    controller requester can
+      nonconsuming RequestVisa : ContractId VisaRequest
+        with 
+          visaType : VisaType
+          duration : Int
+          attachments : [Text]
+        do 
+          create VisaRequest with 
+            requesterData = this
+            status = "In Analysis"
+            comments = [] 
+            ..
+
+
+template VisaRequest
+  with
+    requester : Party
+    consulate : Party
+    requesterData : RequesterRole
+    visaType : VisaType
+    duration : Int
+    attachments : [Text]
+    comments : [Text]
+    status : Text
+  where 
+    signatory requester, consulate
+    controller consulate can
+      ApproveVisa : ContractId Visa
+        with
+          expiryDate : Date
+        do
+          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")
+          create Visa with 
+            holder = requester
+            holderData = requesterData
+            ..
+
+      RequestDocuments : ContractId VisaRequest
+        with
+          comment: Text
+        do 
+          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")  
+          create this with 
+            comments = comments <> [comment]
+
+      DenyVisa : ContractId VisaRequest
+        with
+          reason : Text
+        do
+          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")  
+          create this with 
+            comments = comments <> [reason]
+            status = "Denied"
+
+    controller requester can
+      UploadDocuments : ContractId VisaRequest
+        with
+          newAttachment : Text
+        do
+          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")  
+          create this with attachments = attachments <> [newAttachment]
+
+template Visa
+  with
+    holder : Party
+    consulate : Party
+    holderData :  RequesterRole
+    visaType : VisaType
+    expiryDate : Date
+    attachments : [Text]
+    comments : [Text]
+    status : Text
+  where 
+    signatory consulate, holder
+
+
+testVisa : Script () = do
+  [authority, john, alice ] <- mapA allocateParty ["Authority", "John", "Matheus"]
+
+  consulate <- submit authority do 
+    createCmd ConsulateRole with
+      country = Andorra
+      consulate = john
+      authority
+  
+  requester <- submit john do
+    exerciseCmd consulate CreateRequesterRole with
+      requester = alice
+      name = "Alice Mustermann"
+      birthDate = date 2000 Apr 20
+      address = "23 Somestreet, 12345 Saxony, Germany "
+      nationality = Australia
+      gender = "Female"
+
+  visaReq <- submit alice do
+    exerciseCmd requester RequestVisa with
+      visaType = Study
+      duration = 12 -- months
+      attachments = ["link2myDegree", "link2MyPassport", "link2MyAcceptanceLetter"]
+
+  reqDocs <- submit john do
+    exerciseCmd visaReq RequestDocuments with
+      comment = "Bank statement is missing"
+  
+  visaReq <- submit alice do 
+    exerciseCmd reqDocs UploadDocuments with
+      newAttachment = "link2MyBankStatement"
+
+  app <- submit john do
+    exerciseCmd visaReq ApproveVisa with
+      expiryDate = date 2024 Dec 31
+
+  pure()
