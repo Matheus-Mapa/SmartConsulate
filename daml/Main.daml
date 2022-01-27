@@ -16,6 +16,7 @@ template ConsulateRole
     consulate : Party
   where
     signatory authority
+    ensure authority /= consulate
     controller consulate can 
       nonconsuming CreateRequesterRole : ContractId RequesterRole
         with
@@ -26,27 +27,31 @@ template ConsulateRole
           nationality : Country
           gender : Text
         do 
-          create RequesterRole with ..
+          create RequesterRole with consulateCountry = country, ..
 
 
 template RequesterRole
   with
+    authority : Party
     requester : Party
     consulate : Party
+    consulateCountry : Country
     name : Text
     birthDate : Date
     address : Text
     nationality : Country
     gender : Text
   where
-    signatory consulate
+    signatory consulate, authority
+    ensure requester /= consulate && requester /= authority
     controller requester can
       nonconsuming RequestVisa : ContractId VisaRequest
         with 
           visaType : VisaType
           duration : Int
           attachments : [Text]
-        do 
+        do
+          assertMsg "You can't request a visa to your own country." (nationality /= consulateCountry) 
           create VisaRequest with 
             requesterData = this
             status = "In Analysis"
@@ -56,6 +61,7 @@ template RequesterRole
 
 template VisaRequest
   with
+    authority : Party
     requester : Party
     consulate : Party
     requesterData : RequesterRole
@@ -65,37 +71,41 @@ template VisaRequest
     comments : [Text]
     status : Text
   where 
-    signatory requester, consulate
+    signatory requester, consulate, authority
+    
     controller consulate can
+      RequestDocuments : ContractId VisaRequest
+        with
+          comment: Text
+        do 
+          assertMsg "This request has reached its final state!" 
+            (status /= "Denied" || status /= "Approved")  
+          create this with 
+            comments = comments <> [comment]
+
       ApproveVisa : ContractId Visa
         with
           expiryDate : Date
         do
-          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")
+          assertMsg "This request has reached its final state!" 
+            (status /= "Denied" || status /= "Approved")
           create Visa with 
             holder = requester
             holderData = requesterData
             ..
 
-      RequestDocuments : ContractId VisaRequest
-        with
-          comment: Text
-        do 
-          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")  
-          create this with 
-            comments = comments <> [comment]
-
       DenyVisa : ContractId VisaRequest
         with
           reason : Text
         do
-          assertMsg "This request has reached its final state!" (status /= "Denied" || status /= "Approved")  
+          assertMsg "This request has reached its final state!" 
+            (status /= "Denied" || status /= "Approved")  
           create this with 
             comments = comments <> [reason]
             status = "Denied"
 
     controller requester can
-      UploadDocuments : ContractId VisaRequest
+      AttachDocuments : ContractId VisaRequest
         with
           newAttachment : Text
         do
@@ -105,6 +115,7 @@ template VisaRequest
 template Visa
   with
     holder : Party
+    authority : Party
     consulate : Party
     holderData :  RequesterRole
     visaType : VisaType
@@ -113,17 +124,19 @@ template Visa
     comments : [Text]
     status : Text
   where 
-    signatory consulate, holder
+    signatory consulate, authority, holder
 
 
+
+testVisa : Script ()
 testVisa : Script () = do
-  [authority, john, alice ] <- mapA allocateParty ["Authority", "John", "Matheus"]
+  [bob, john, alice ] <- mapA allocateParty ["bob", "John", "alice"]
 
-  consulate <- submit authority do 
+  consulate <- submit bob do 
     createCmd ConsulateRole with
       country = Andorra
       consulate = john
-      authority
+      authority = bob
   
   requester <- submit john do
     exerciseCmd consulate CreateRequesterRole with
@@ -145,7 +158,7 @@ testVisa : Script () = do
       comment = "Bank statement is missing"
   
   visaReq <- submit alice do 
-    exerciseCmd reqDocs UploadDocuments with
+    exerciseCmd reqDocs AttachDocuments with
       newAttachment = "link2MyBankStatement"
 
   app <- submit john do
